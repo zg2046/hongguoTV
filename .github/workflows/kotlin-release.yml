@@ -51,7 +51,7 @@ jobs:
           set -euo pipefail
           apk="kotlin-tv/app/build/outputs/apk/release/app-release.apk"
           build_tools="$ANDROID_HOME/build-tools/36.0.0"
-          "$build_tools/apksigner" verify --print-certs "$apk" | grep -F '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
+          "$build_tools/apksigner" verify --print-certs "$apk" | grep -E 'Signer #1 certificate SHA-256 digest: [0-9a-fA-F]{64}'
           "$build_tools/aapt" dump badging "$apk" | grep -F "versionCode='$((10000 + BUILD_NUMBER))'"
           "$build_tools/aapt" dump badging "$apk" | grep -F "versionName='0.9.0+$BUILD_NUMBER'"
           "$build_tools/aapt" dump badging "$apk" | grep -F "sdkVersion:'26'"
@@ -65,13 +65,43 @@ jobs:
           cp kotlin-tv/app/build/outputs/apk/release/app-release.apk "$apk"
           source="outputs/hongguotv-${RELEASE_TAG}-source.zip"
           git archive --format=zip --prefix="hongguotv-${RELEASE_TAG}/" --output="$source" "$GITHUB_SHA"
+          python3 - "$apk" "$source" "$RELEASE_TAG" "$BUILD_NUMBER" "$GITHUB_SHA" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          apk_path, source_path, tag, build_number, commit = sys.argv[1:]
+          apk = pathlib.Path(apk_path)
+          version_code = 10000 + int(build_number)
+          version_name = f"0.9.0+{build_number}"
+          manifest = {
+              "schema": 1,
+              "packageName": "com.hongguotv.nativeapp",
+              "versionCode": version_code,
+              "versionName": version_name,
+              "minSdk": 26,
+              "tag": tag,
+              "sourceCommit": commit,
+              "apk": {
+                  "name": apk.name,
+                  "size": apk.stat().st_size,
+                  "sha256": hashlib.sha256(apk.read_bytes()).hexdigest(),
+              },
+              "notes": "Android TV 原生版，包含漫剧搜索标题字段兼容修复。",
+          }
+          pathlib.Path("outputs/update.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
           checksums="outputs/SHA256SUMS"
-          (cd outputs && sha256sum "$(basename "$apk")" "$(basename "$source")" > "$(basename "$checksums")")
+          (cd outputs && sha256sum "$(basename "$apk")" "$(basename "$source")" update.json > "$(basename "$checksums")")
           notes="outputs/release-notes.md"
           cat > "$notes" <<EOF
           Android TV 原生版正式发布：0.9.0+$BUILD_NUMBER（versionCode $((10000 + BUILD_NUMBER))）。
 
-          此 Release 使用项目正式签名，可覆盖相同签名的既有安装；最低支持 Android 8.0（API 26）。
+          此 Release 使用配置的 Android 签名密钥；由于密钥可能与其他发行版不同，不能保证覆盖安装旧版。最低支持 Android 8.0（API 26）。
 
           本版包含漫剧搜索标题字段兼容修复。已通过 Kotlin 单元测试、Android Release lint 和 APK 签名/版本校验。
 
@@ -79,11 +109,13 @@ jobs:
 
           - APK：Android TV 安装包
           - source.zip：对应源码
+          - update.json：应用内更新元数据
           - SHA256SUMS：文件校验和
           EOF
-          gh release create "$RELEASE_TAG" "$apk" "$source" "$checksums" \
+          gh release create "$RELEASE_TAG" "$apk" "$source" outputs/update.json "$checksums" \
             --target "$GITHUB_SHA" \
             --title "红果 TV 0.9.0+$BUILD_NUMBER" \
+            --latest \
             --notes-file "$notes"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
