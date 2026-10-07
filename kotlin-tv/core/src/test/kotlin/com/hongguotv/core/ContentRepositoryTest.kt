@@ -220,6 +220,20 @@ class ContentRepositoryTest {
         assertEquals(listOf("999"),repo.search("修仙",2,ContentType.COMIC).items.map { it.id })
     }
 
+    @Test fun comicSearchAcceptsSeriesNameWhenSearchVideoHasNoTitleField() {
+        val repo=repository {
+            JSONObject().put("code",0).put("search_tabs",JSONArray().put(
+                JSONObject().put("tab_type",19).put("data",JSONArray().put(
+                    JSONObject().put("video_data",JSONArray().put(
+                        JSONObject().put("series_id","12345").put("series_name","万妖图录传")
+                    ))
+                ))
+            )).toString()
+        }
+        val result=repo.search("万妖",1,ContentType.COMIC)
+        assertEquals(listOf("万妖图录传"),result.items.map { it.title })
+    }
+
     @Test fun emptyComicSearchDoesNotFallBackToShortResults() {
         var requests=0
         val repo=repository { requests++; """{"code":0,"search_tabs":[{"tab_type":19,"data":[],"has_more":false}]}""" }

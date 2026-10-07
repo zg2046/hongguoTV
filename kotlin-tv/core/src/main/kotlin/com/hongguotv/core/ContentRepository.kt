@@ -104,7 +104,12 @@ class ContentRepository(val http: OkHttpClient = OkHttpClient.Builder().connectT
             for(row in cells) {
                 val video=row.optJSONArray("video_data")?.objects()?.firstOrNull() ?: continue
                 val id=video.str("series_id").ifEmpty { row.str("book_id").ifEmpty { row.str("search_result_id") } }
-                val title=row.optJSONObject("search_high_light")?.optJSONObject("title")?.str("text").orEmpty().ifEmpty { video.str("title").ifEmpty { row.str("cell_name") } }
+                val title=row.optJSONObject("search_high_light")?.optJSONObject("title")?.str("text").orEmpty()
+                    .ifEmpty { video.str("title") }
+                    .ifEmpty { video.str("series_name") }
+                    .ifEmpty { video.str("series_title") }
+                    .ifEmpty { row.str("cell_name") }
+                    .ifEmpty { row.str("name") }
                 val count=video.optInt("episode_cnt")
                 list+=Series(id,title,cleanUrl(video.str("cover").ifEmpty { video.str("cover_url") }),video.str("video_desc"),if(count>0) "全 $count 集" else video.str("rec_text"),video.str("sub_title"))
             }
