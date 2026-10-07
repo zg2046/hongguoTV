@@ -1,0 +1,98 @@
+name: Publish Kotlin TV release
+on:
+  push:
+    tags:
+      - 'kotlin-v0.9.0-build.*'
+permissions:
+  contents: write
+concurrency:
+  group: zg-kotlin-tv-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Configure release version and signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.HONGGUOTV_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^kotlin-v0\.9\.0-build\.([1-9][0-9]*)$ ]]; then
+            echo "Release tag must match kotlin-v0.9.0-build.N" >&2
+            exit 1
+          fi
+          build_number="${BASH_REMATCH[1]}"
+          test -n "$KEYSTORE_B64"
+          umask 077
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          echo "HONGGUOTV_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          echo "HONGGUOTV_VERSION_CODE=$((10000 + build_number))" >> "$GITHUB_ENV"
+          echo "HONGGUOTV_VERSION_NAME=0.9.0+$build_number" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$build_number" >> "$GITHUB_ENV"
+      - name: Test, lint, and build signed APK
+        env:
+          HONGGUOTV_STORE_PASSWORD: ${{ secrets.HONGGUOTV_STORE_PASSWORD }}
+          HONGGUOTV_KEY_ALIAS: ${{ secrets.HONGGUOTV_KEY_ALIAS }}
+          HONGGUOTV_KEY_PASSWORD: ${{ secrets.HONGGUOTV_KEY_PASSWORD }}
+        run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:lintRelease :app:assembleRelease --console=plain
+      - name: Verify APK signature and package metadata
+        run: |
+          set -euo pipefail
+          apk="kotlin-tv/app/build/outputs/apk/release/app-release.apk"
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          "$build_tools/apksigner" verify --print-certs "$apk" | grep -F '3579f7a8a91bbbc44688db60fb16a5561921784af23fa92f39b849086d76ca98'
+          "$build_tools/aapt" dump badging "$apk" | grep -F "versionCode='$((10000 + BUILD_NUMBER))'"
+          "$build_tools/aapt" dump badging "$apk" | grep -F "versionName='0.9.0+$BUILD_NUMBER'"
+          "$build_tools/aapt" dump badging "$apk" | grep -F "sdkVersion:'26'"
+      - name: Package release assets and publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p outputs
+          apk="outputs/hongguotv-kotlin-${RELEASE_TAG#kotlin-v}-android8.apk"
+          cp kotlin-tv/app/build/outputs/apk/release/app-release.apk "$apk"
+          source="outputs/hongguotv-${RELEASE_TAG}-source.zip"
+          git archive --format=zip --prefix="hongguotv-${RELEASE_TAG}/" --output="$source" "$GITHUB_SHA"
+          checksums="outputs/SHA256SUMS"
+          (cd outputs && sha256sum "$(basename "$apk")" "$(basename "$source")" > "$(basename "$checksums")")
+          notes="outputs/release-notes.md"
+          cat > "$notes" <<EOF
+          Android TV 原生版正式发布：0.9.0+$BUILD_NUMBER（versionCode $((10000 + BUILD_NUMBER))）。
+
+          此 Release 使用项目正式签名，可覆盖相同签名的既有安装；最低支持 Android 8.0（API 26）。
+
+          本版包含漫剧搜索标题字段兼容修复。已通过 Kotlin 单元测试、Android Release lint 和 APK 签名/版本校验。
+
+          源码提交：$GITHUB_SHA
+
+          - APK：Android TV 安装包
+          - source.zip：对应源码
+          - SHA256SUMS：文件校验和
+          EOF
+          gh release create "$RELEASE_TAG" "$apk" "$source" "$checksums" \
+            --target "$GITHUB_SHA" \
+            --title "红果 TV 0.9.0+$BUILD_NUMBER" \
+            --notes-file "$notes"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: kotlin-tv-release-verification
+          path: |
+            kotlin-tv/core/build/reports/tests/test/
+            kotlin-tv/app/build/reports/lint-results-release.*
+            outputs/
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
